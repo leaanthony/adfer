@@ -8,6 +8,7 @@
     <a href="https://godoc.org/github.com/leaanthony/adfer"><img src="https://godoc.org/github.com/leaanthony/adfer?status.svg" alt="GoDoc"></a>
     <a href="https://GitHub.com/leaanthony/adfer/releases/"><img src="https://img.shields.io/github/release/leaanthony/adfer.svg" alt="GitHub release"></a>
 </div>
+<br/>
 
 This Go library provides a flexible way to handle panics across your application, including in goroutines. 
 It allows for custom error handling, dumping errors to a file, optionally exiting the program after a panic occurs, 
@@ -145,6 +146,10 @@ if err != nil {
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+## What does the name mean?
+
+It is Welsh for "Recover" [as well as a few other meanings](https://en.wiktionary.org/wiki/adfer).
 
 ## License
 
