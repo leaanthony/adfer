@@ -1,7 +1,6 @@
-
 <div align="center">
     <img src="logo.png" width="40%"/>
-    <br/>
+    <br/><br/>
     <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
     <a href="https://codecov.io/gh/leaanthony/adfer"><img src="https://codecov.io/gh/leaanthony/adfer/graph/badge.svg?token=XBDW78VUYA"/></a>
     <a href="https://goreportcard.com/report/github.com/leaanthony/adfer"><img src="https://goreportcard.com/badge/github.com/leaanthony/adfer" alt="Go Report Card"></a>
@@ -10,8 +9,8 @@
 </div>
 <br/>
 
-This Go library provides a flexible way to handle panics across your application, including in goroutines. 
-It allows for custom error handling, dumping errors to a file, optionally exiting the program after a panic occurs, 
+This Go library provides a flexible way to handle panics across your application, including in goroutines.
+It allows for custom error handling, dumping errors to a file, optionally exiting the program after a panic occurs,
 including system information in crash reports, and managing crash reports.
 
 ## Features
@@ -34,114 +33,89 @@ go get github.com/leaanthony/adfer
 
 ## Usage
 
-Here are some examples of how to use adfer in your applications.
-
 ### Basic Usage
 
 ```go
 package main
 
 import (
-    "fmt"
-    "github.com/leaanthony/adfer"
+	"github.com/leaanthony/adfer"
 )
 
 func main() {
-    // Initialize the panic handler
-    ph := adfer.New()
+	ph := adfer.New(adfer.Options{
+		DumpToFile: true,
+		FilePath:   "crash_reports.json",
+	})
+	defer ph.Recover()
 
-    // Use SafeGo for goroutines
-    ph.SafeGo(func() {
-        // This panic will be caught and handled
-        panic("oops in goroutine")
-    })
-
-    // For the main thread, use defer
-    defer ph.Recover()
-
-    // This panic will also be caught and handled
-    panic("oops in main")
+	// Your code here
+	panic("Oh no!")
 }
 ```
 
-### Custom Error Handler
+### Advanced Usage
 
 ```go
-ph := panichandler.New(panichandler.WithErrorHandler(func(err error, stack []byte) {
-    fmt.Printf("Custom handler: %v\n", err)
-}))
-```
+package main
 
-### Dump to File
-
-```go
-ph := panichandler.New(panichandler.WithDumpToFile("/path/to/panic.log"))
-```
-
-### Exit on Panic
-
-```go
-ph := panichandler.New(panichandler.WithExitOnPanic())
-```
-
-### Include System Information
-
-```go
-ph := panichandler.New(panichandler.WithSystemInfo())
-```
-
-### Wipe Crash File on Initialization
-
-```go
-ph := panichandler.New(panichandler.WithWipeFileOnInit())
-```
-
-### Add Custom Metadata
-
-```go
-ph := panichandler.New(panichandler.WithMetadata(map[string]string{
-    "version": "1.2.3",
-    "environment": "production",
-}))
-```
-
-### Combining Options
-
-```go
-ph := panichandler.New(
-    panichandler.WithErrorHandler(customHandler),
-    panichandler.WithDumpToFile("/path/to/panic.log"),
-    panichandler.WithExitOnPanic(),
-    panichandler.WithSystemInfo(),
-    panichandler.WithWipeFileOnInit(),
-    panichandler.WithMetadata(map[string]string{
-        "version": "1.2.3",
-        "environment": "production",
-    }),
+import (
+	"fmt"
+	"github.com/leaanthony/adfer"
 )
-```
 
-### Retrieving Last N Crash Reports
+func main() {
+	ph := adfer.New(adfer.Options{
+		DumpToFile:        true,
+		FilePath:          "crash_reports.json",
+		ExitOnPanic:       true,
+		IncludeSystemInfo: true,
+		Metadata:          map[string]string{"version": "1.0.0"},
+		WipeFile:          true,
+		ErrorHandler:      customErrorHandler,
+	})
 
-```go
-reports, err := ph.GetLastNCrashReports(5)
-if err != nil {
-    fmt.Printf("Error retrieving crash reports: %v\n", err)
-} else {
-    for _, report := range reports {
-        fmt.Printf("Crash at %v: %s\n", report.Timestamp, report.Error)
-    }
+	// Safe goroutine execution
+	ph.SafeGo(func() {
+		// Your code here
+		panic("Goroutine panic!")
+	})
+
+	// Retrieve last 5 crash reports
+	reports, err := ph.GetLastNCrashReports(5)
+	if err != nil {
+		fmt.Printf("Error retrieving crash reports: %v\n", err)
+	}
+
+	// Wipe crash file
+	err = ph.WipeCrashFile()
+	if err != nil {
+		fmt.Printf("Error wiping crash file: %v\n", err)
+	}
+}
+
+func customErrorHandler(err error, stack []byte) {
+	fmt.Printf("Custom error handler:\nError: %v\nStack:\n%s\n", err, stack)
 }
 ```
 
-### Wiping Crash File
+## API
 
-```go
-err := ph.WipeCrashFile()
-if err != nil {
-    fmt.Printf("Error wiping crash file: %v\n", err)
-}
-```
+### Types
+
+- `CrashReport`: Represents a single crash report
+- `SystemInfo`: Represents system information
+- `ErrorHandler`: Function type for custom error handling
+- `Options`: Configuration options for panic handling
+- `PanicHandler`: Main struct for panic handling
+
+### Functions
+
+- `New(options Options) *PanicHandler`: Creates a new PanicHandler
+- `(ph *PanicHandler) Recover()`: Recovers from panics
+- `(ph *PanicHandler) SafeGo(f func())`: Executes a function in a goroutine with panic recovery
+- `(ph *PanicHandler) GetLastNCrashReports(n int) ([]CrashReport, error)`: Retrieves the last N crash reports
+- `(ph *PanicHandler) WipeCrashFile() error`: Clears all crash reports from the log file
 
 ## Contributing
 
