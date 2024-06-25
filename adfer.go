@@ -28,19 +28,28 @@ type SystemInfo struct {
 // ErrorHandler is a function type for custom error handling
 type ErrorHandler func(error, []byte)
 
-// PanicHandler struct holds the configuration for panic handling
-type PanicHandler struct {
-	errorHandler      ErrorHandler
-	dumpToFile        bool
-	filePath          string
-	exitOnPanic       bool
-	includeSystemInfo bool
-	metadata          map[string]string
-	wipeFile          bool
+// Options struct holds the configuration for panic handling
+type Options struct {
+	// ErrorHandler is a custom error handling function
+	ErrorHandler ErrorHandler
+	// DumpToFile enables dumping errors to a file
+	DumpToFile bool
+	// FilePath is the path to the file to dump errors to
+	FilePath string
+	// ExitOnPanic enables exiting the program after handling a panic
+	ExitOnPanic bool
+	// IncludeSystemInfo enables including system information in crash reports
+	IncludeSystemInfo bool
+	// Metadata is custom metadata to include in crash reports
+	Metadata map[string]string
+	// WipeFile enables wiping the crash file on initialization
+	WipeFile bool
 }
 
-// Option is a function type for functional options
-type Option func(*PanicHandler)
+type PanicHandler struct {
+	options  Options
+	exitFunc func(int)
+}
 
 // defaultErrorHandler is the default error handling function
 func defaultErrorHandler(err error, stack []byte) {
@@ -48,71 +57,21 @@ func defaultErrorHandler(err error, stack []byte) {
 }
 
 // New initializes a new PanicHandler with optional configurations
-func New(options ...Option) *PanicHandler {
+func New(options Options) *PanicHandler {
+	if options.ErrorHandler == nil {
+		options.ErrorHandler = defaultErrorHandler
+	}
 	ph := &PanicHandler{
-		errorHandler:      defaultErrorHandler,
-		dumpToFile:        false,
-		filePath:          "panic.log",
-		exitOnPanic:       false,
-		includeSystemInfo: false,
-		metadata:          make(map[string]string),
-		wipeFile:          false,
+		options:  options,
+		exitFunc: os.Exit,
 	}
-	for _, option := range options {
-		option(ph)
-	}
-	if ph.wipeFile && ph.dumpToFile {
+	if ph.options.WipeFile && ph.options.DumpToFile {
 		err := ph.WipeCrashFile()
 		if err != nil {
 			fmt.Printf("Error wiping crash file: %v\n", err)
 		}
 	}
 	return ph
-}
-
-// WithErrorHandler sets a custom error handler
-func WithErrorHandler(handler ErrorHandler) Option {
-	return func(ph *PanicHandler) {
-		ph.errorHandler = handler
-	}
-}
-
-// WithDumpToFile enables dumping errors to a file
-func WithDumpToFile(filePath string) Option {
-	return func(ph *PanicHandler) {
-		ph.dumpToFile = true
-		ph.filePath = filePath
-	}
-}
-
-// WithExitOnPanic enables exiting the program after handling a panic
-func WithExitOnPanic() Option {
-	return func(ph *PanicHandler) {
-		ph.exitOnPanic = true
-	}
-}
-
-// WithSystemInfo enables including system information in crash reports
-func WithSystemInfo() Option {
-	return func(ph *PanicHandler) {
-		ph.includeSystemInfo = true
-	}
-}
-
-// WithMetadata adds custom metadata to crash reports
-func WithMetadata(metadata map[string]string) Option {
-	return func(ph *PanicHandler) {
-		for k, v := range metadata {
-			ph.metadata[k] = v
-		}
-	}
-}
-
-// WithWipeFile enables wiping the crash file on initialization
-func WithWipeFile() Option {
-	return func(ph *PanicHandler) {
-		ph.wipeFile = true
-	}
 }
 
 // Recover is the main function to recover from panics
@@ -123,17 +82,17 @@ func (ph *PanicHandler) Recover() {
 			err = fmt.Errorf("%v", r)
 		}
 		stack := debug.Stack()
-		ph.errorHandler(err, stack)
+		ph.options.ErrorHandler(err, stack)
 
-		if ph.dumpToFile {
+		if ph.options.DumpToFile {
 			report := CrashReport{
 				Timestamp: time.Now(),
 				Error:     err.Error(),
 				Stack:     string(stack),
-				Metadata:  ph.metadata,
+				Metadata:  ph.options.Metadata,
 			}
 
-			if ph.includeSystemInfo {
+			if ph.options.IncludeSystemInfo {
 				report.SystemInfo = SystemInfo{
 					OS:           runtime.GOOS,
 					Architecture: runtime.GOARCH,
@@ -144,8 +103,8 @@ func (ph *PanicHandler) Recover() {
 			ph.appendCrashReport(report)
 		}
 
-		if ph.exitOnPanic {
-			os.Exit(1)
+		if ph.options.ExitOnPanic {
+			ph.exitFunc(1)
 		}
 	}
 }
@@ -153,7 +112,7 @@ func (ph *PanicHandler) Recover() {
 func (ph *PanicHandler) appendCrashReport(report CrashReport) {
 	var reports []CrashReport
 
-	data, err := os.ReadFile(ph.filePath)
+	data, err := os.ReadFile(ph.options.FilePath)
 	if err == nil {
 		err := json.Unmarshal(data, &reports)
 		if err != nil {
@@ -164,7 +123,7 @@ func (ph *PanicHandler) appendCrashReport(report CrashReport) {
 	reports = append(reports, report)
 
 	data, _ = json.MarshalIndent(reports, "", "  ")
-	err = os.WriteFile(ph.filePath, data, 0644)
+	err = os.WriteFile(ph.options.FilePath, data, 0644)
 	if err != nil {
 		fmt.Printf("Error writing crash report to file: %v\n", err)
 	}
@@ -178,14 +137,12 @@ func (ph *PanicHandler) SafeGo(f func()) {
 	}()
 }
 
-// SetErrorHandler allows setting a custom error handler after initialization
-func (ph *PanicHandler) SetErrorHandler(handler ErrorHandler) {
-	ph.errorHandler = handler
-}
-
 // GetLastNCrashReports retrieves the last N crash reports from the log file
 func (ph *PanicHandler) GetLastNCrashReports(n int) ([]CrashReport, error) {
-	data, err := os.ReadFile(ph.filePath)
+	if ph.options.FilePath == "" {
+		return nil, fmt.Errorf("no file path set for crash reports")
+	}
+	data, err := os.ReadFile(ph.options.FilePath)
 	if err != nil {
 		return nil, err
 	}
@@ -204,5 +161,8 @@ func (ph *PanicHandler) GetLastNCrashReports(n int) ([]CrashReport, error) {
 
 // WipeCrashFile clears all crash reports from the log file
 func (ph *PanicHandler) WipeCrashFile() error {
-	return os.WriteFile(ph.filePath, []byte("[]"), 0644)
+	if ph.options.FilePath == "" {
+		return fmt.Errorf("no file path set for crash reports")
+	}
+	return os.WriteFile(ph.options.FilePath, []byte("[]"), 0644)
 }

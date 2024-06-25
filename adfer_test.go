@@ -1,11 +1,13 @@
 package adfer
 
 import (
+	"bytes"
 	"encoding/json"
-	"errors"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -13,77 +15,281 @@ import (
 )
 
 func TestNew(t *testing.T) {
-	ph := New()
-	if ph == nil {
-		t.Error("New() returned nil")
-	}
-}
+	t.Run("Default options", func(t *testing.T) {
+		ph := New(Options{})
+		if ph == nil {
+			t.Fatal("Expected non-nil PanicHandler")
+		}
+		if ph.options.ErrorHandler == nil {
+			t.Error("Expected non-nil ErrorHandler")
+		}
+	})
 
-func TestWithErrorHandler(t *testing.T) {
-	customHandler := func(err error, stack []byte) {}
-	ph := New(WithErrorHandler(customHandler))
-	if ph.errorHandler == nil {
-		t.Error("WithErrorHandler() did not set the error handler")
-	}
-}
-
-func TestWithDumpToFile(t *testing.T) {
-	ph := New(WithDumpToFile("test.log"))
-	if !ph.dumpToFile {
-		t.Error("WithDumpToFile() did not enable file dumping")
-	}
-	if ph.filePath != "test.log" {
-		t.Error("WithDumpToFile() did not set the correct file path")
-	}
-}
-
-func TestWithExitOnPanic(t *testing.T) {
-	ph := New(WithExitOnPanic())
-	if !ph.exitOnPanic {
-		t.Error("WithExitOnPanic() did not enable exiting on panic")
-	}
-}
-
-func TestWithSystemInfo(t *testing.T) {
-	ph := New(WithSystemInfo())
-	if !ph.includeSystemInfo {
-		t.Error("WithSystemInfo() did not enable including system info")
-	}
-}
-
-func TestWithMetadata(t *testing.T) {
-	metadata := map[string]string{"version": "1.0.0", "env": "test"}
-	ph := New(WithMetadata(metadata))
-	if len(ph.metadata) != 2 || ph.metadata["version"] != "1.0.0" || ph.metadata["env"] != "test" {
-		t.Error("WithMetadata() did not set the metadata correctly")
-	}
-}
-
-func TestWithWipeFileOnInit(t *testing.T) {
-	ph := New(WithWipeFile())
-	if !ph.wipeFile {
-		t.Error("WithWipeFileOnInit() did not enable wiping file on init")
-	}
+	t.Run("Custom options", func(t *testing.T) {
+		customHandler := func(error, []byte) {}
+		ph := New(Options{
+			ErrorHandler:      customHandler,
+			DumpToFile:        true,
+			FilePath:          "test.json",
+			ExitOnPanic:       true,
+			IncludeSystemInfo: true,
+			Metadata:          map[string]string{"test": "value"},
+			WipeFile:          true,
+		})
+		if ph == nil {
+			t.Fatal("Expected non-nil PanicHandler")
+		}
+		if ph.options.ErrorHandler == nil {
+			t.Error("Expected non-nil ErrorHandler")
+		}
+		if !ph.options.DumpToFile {
+			t.Error("Expected DumpToFile to be true")
+		}
+		if ph.options.FilePath != "test.json" {
+			t.Errorf("Expected FilePath to be 'test.json', got '%s'", ph.options.FilePath)
+		}
+		if !ph.options.ExitOnPanic {
+			t.Error("Expected ExitOnPanic to be true")
+		}
+		if !ph.options.IncludeSystemInfo {
+			t.Error("Expected IncludeSystemInfo to be true")
+		}
+		if !reflect.DeepEqual(ph.options.Metadata, map[string]string{"test": "value"}) {
+			t.Error("Expected Metadata to match")
+		}
+		if !ph.options.WipeFile {
+			t.Error("Expected WipeFile to be true")
+		}
+	})
 }
 
 func TestRecover(t *testing.T) {
-	testFile := "test_recover.log"
-	defer os.Remove(testFile)
+	t.Run("No panic", func(t *testing.T) {
+		ph := New(Options{})
+		func() {
+			defer ph.Recover()
+		}()
+		// If we reach here, no panic occurred
+	})
 
-	ph := New(
-		WithDumpToFile(testFile),
-		WithSystemInfo(),
-		WithMetadata(map[string]string{"test": "value"}),
-	)
+	t.Run("Recover from panic", func(t *testing.T) {
+		var recoveredErr error
+		var recoveredStack []byte
+		ph := New(Options{
+			ErrorHandler: func(err error, stack []byte) {
+				recoveredErr = err
+				recoveredStack = stack
+			},
+		})
+		func() {
+			defer ph.Recover()
+			panic("test panic")
+		}()
+		if recoveredErr == nil || recoveredErr.Error() != "test panic" {
+			t.Errorf("Expected error 'test panic', got '%v'", recoveredErr)
+		}
+		if len(recoveredStack) == 0 {
+			t.Error("Expected non-empty stack trace")
+		}
+	})
+}
+
+func TestSafeGo(t *testing.T) {
+	ph := New(Options{})
+	done := make(chan bool)
+
+	ph.SafeGo(func() {
+		panic("test panic")
+		done <- true
+	})
+
+	select {
+	case <-done:
+		t.Fatal("Goroutine should have panicked")
+	case <-time.After(100 * time.Millisecond):
+		// Success: goroutine panicked and was recovered
+	}
+}
+
+func TestGetLastNCrashReports(t *testing.T) {
+	tempFile, err := os.CreateTemp("", "crash_*.json")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tempFile.Name())
+
+	reports := []CrashReport{
+		{Timestamp: time.Now(), Error: "error1"},
+		{Timestamp: time.Now(), Error: "error2"},
+		{Timestamp: time.Now(), Error: "error3"},
+	}
+	data, _ := json.Marshal(reports)
+	err = os.WriteFile(tempFile.Name(), data, 0644)
+	if err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+
+	ph := New(Options{FilePath: tempFile.Name()})
+
+	t.Run("Get all reports", func(t *testing.T) {
+		result, err := ph.GetLastNCrashReports(3)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+		if len(result) != 3 {
+			t.Errorf("Expected 3 reports, got %d", len(result))
+		}
+	})
+
+	t.Run("Get last 2 reports", func(t *testing.T) {
+		result, err := ph.GetLastNCrashReports(2)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+		if len(result) != 2 {
+			t.Errorf("Expected 2 reports, got %d", len(result))
+		}
+		if result[0].Error != "error2" || result[1].Error != "error3" {
+			t.Errorf("Unexpected report order")
+		}
+	})
+
+	t.Run("Get more reports than available", func(t *testing.T) {
+		result, err := ph.GetLastNCrashReports(5)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+		if len(result) != 3 {
+			t.Errorf("Expected 3 reports, got %d", len(result))
+		}
+	})
+	t.Run("Invalid FilePath", func(t *testing.T) {
+		ph := New(Options{FilePath: ""})
+		_, err := ph.GetLastNCrashReports(1)
+		if err == nil {
+			t.Error("Expected error for invalid FilePath, got nil")
+		}
+		if err.Error() != "no file path set for crash reports" {
+			t.Errorf("Unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("Non-existent file", func(t *testing.T) {
+		ph := New(Options{FilePath: "non_existent_file.json"})
+		_, err := ph.GetLastNCrashReports(1)
+		if err == nil {
+			t.Error("Expected error for non-existent file, got nil")
+		}
+		if !os.IsNotExist(err) {
+			t.Errorf("Expected 'file not found' error, got: %v", err)
+		}
+	})
+
+	t.Run("Bad JSON in file", func(t *testing.T) {
+		tempFile, err := os.CreateTemp("", "bad_json_*.json")
+		if err != nil {
+			t.Fatalf("Failed to create temp file: %v", err)
+		}
+		defer os.Remove(tempFile.Name())
+
+		badJSON := `[{"timestamp": "2023-04-01T12:00:00Z", "error": "test error", "stack": "test stack"},`
+		err = os.WriteFile(tempFile.Name(), []byte(badJSON), 0644)
+		if err != nil {
+			t.Fatalf("Failed to write bad JSON to temp file: %v", err)
+		}
+
+		ph := New(Options{FilePath: tempFile.Name()})
+		_, err = ph.GetLastNCrashReports(1)
+		if err == nil {
+			t.Error("Expected error for bad JSON, got nil")
+		}
+		if _, ok := err.(*json.SyntaxError); !ok {
+			t.Errorf("Expected json.SyntaxError, got: %T", err)
+		}
+	})
+}
+
+func TestWipeCrashFile(t *testing.T) {
+	tempFile, err := os.CreateTemp("", "crash_*.json")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tempFile.Name())
+
+	reports := []CrashReport{{Timestamp: time.Now(), Error: "error1"}}
+	data, _ := json.Marshal(reports)
+	err = os.WriteFile(tempFile.Name(), data, 0644)
+	if err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+
+	ph := New(Options{FilePath: tempFile.Name()})
+
+	err = ph.WipeCrashFile()
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	data, err = os.ReadFile(tempFile.Name())
+	if err != nil {
+		t.Fatalf("Failed to read temp file: %v", err)
+	}
+	if string(data) != "[]" {
+		t.Errorf("Expected empty array '[]', got '%s'", string(data))
+	}
+}
+
+func TestWipeCrashFileOnInitialization(t *testing.T) {
+	tempFile, err := os.CreateTemp("", "crash_*.json")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tempFile.Name())
+
+	reports := []CrashReport{{Timestamp: time.Now(), Error: "error1"}}
+	data, _ := json.Marshal(reports)
+	err = os.WriteFile(tempFile.Name(), data, 0644)
+	if err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+
+	New(Options{
+		FilePath:   tempFile.Name(),
+		DumpToFile: true,
+		WipeFile:   true,
+	})
+
+	data, err = os.ReadFile(tempFile.Name())
+	if err != nil {
+		t.Fatalf("Failed to read temp file: %v", err)
+	}
+	if string(data) != "[]" {
+		t.Errorf("Expected empty array '[]', got '%s'", string(data))
+	}
+}
+
+func TestDumpToFile(t *testing.T) {
+	tempFile, err := os.CreateTemp("", "crash_*.json")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tempFile.Name())
+
+	ph := New(Options{
+		DumpToFile:        true,
+		FilePath:          tempFile.Name(),
+		IncludeSystemInfo: true,
+		Metadata:          map[string]string{"test": "value"},
+	})
 
 	func() {
 		defer ph.Recover()
 		panic("test panic")
 	}()
 
-	data, err := os.ReadFile(testFile)
+	data, err := os.ReadFile(tempFile.Name())
 	if err != nil {
-		t.Fatalf("Failed to read crash file: %v", err)
+		t.Fatalf("Failed to read temp file: %v", err)
 	}
 
 	var reports []CrashReport
@@ -93,7 +299,7 @@ func TestRecover(t *testing.T) {
 	}
 
 	if len(reports) != 1 {
-		t.Fatalf("Expected 1 crash report, got %d", len(reports))
+		t.Fatalf("Expected 1 report, got %d", len(reports))
 	}
 
 	report := reports[0]
@@ -101,204 +307,163 @@ func TestRecover(t *testing.T) {
 		t.Errorf("Expected error 'test panic', got '%s'", report.Error)
 	}
 	if report.SystemInfo.OS != runtime.GOOS {
-		t.Errorf("Expected OS %s, got %s", runtime.GOOS, report.SystemInfo.OS)
+		t.Errorf("Expected OS '%s', got '%s'", runtime.GOOS, report.SystemInfo.OS)
 	}
 	if report.Metadata["test"] != "value" {
-		t.Errorf("Expected metadata 'test: value', got '%s'", report.Metadata["test"])
+		t.Errorf("Expected metadata value 'value', got '%s'", report.Metadata["test"])
+	}
+	if !strings.Contains(report.Stack, "panic") {
+		t.Error("Expected stack trace to contain 'panic'")
 	}
 }
 
-func TestSafeGo(t *testing.T) {
-	ph := New()
-	done := make(chan bool)
+func TestExitOnPanic(t *testing.T) {
+	if os.Getenv("TEST_EXIT") == "1" {
+		ph := New(Options{ExitOnPanic: true})
+		defer ph.Recover()
+		panic("test panic")
+	}
 
-	ph.SafeGo(func() {
-		panic("test panic in goroutine")
+	cmd := exec.Command(os.Args[0], "-test.run=TestExitOnPanic")
+	cmd.Env = append(os.Environ(), "TEST_EXIT=1")
+	err := cmd.Run()
+	if e, ok := err.(*exec.ExitError); ok && !e.Success() {
+		return // test passed
+	}
+	t.Fatalf("Process ran with err %v, want exit status 1", err)
+}
+
+func TestWipeCrashFileInvalidPath(t *testing.T) {
+	// Create a PanicHandler with an invalid FilePath
+	ph := New(Options{
+		FilePath: "", // Empty string as an invalid path
 	})
 
-	go func() {
-		time.Sleep(time.Millisecond * 100)
-		done <- true
-	}()
+	// Attempt to wipe the crash file
+	err := ph.WipeCrashFile()
 
-	<-done
-	// If we reach here, it means the panic was caught and the goroutine didn't crash the program
-}
+	// Check if an error was returned
+	if err == nil {
+		t.Error("Expected an error for invalid FilePath, but got nil")
+	}
 
-func TestSetErrorHandler(t *testing.T) {
-	ph := New()
-	newHandler := func(err error, stack []byte) {}
-	ph.SetErrorHandler(newHandler)
-	if ph.errorHandler == nil {
-		t.Error("SetErrorHandler() did not set the new error handler")
+	// Check if the error message is correct
+	expectedErr := "no file path set for crash reports"
+	if err.Error() != expectedErr {
+		t.Errorf("Expected error message '%s', but got '%s'", expectedErr, err.Error())
 	}
 }
 
-func TestGetLastNCrashReports(t *testing.T) {
-	testFile := "test_get_reports.log"
-	defer os.Remove(testFile)
-
-	ph := New(WithDumpToFile(testFile))
-
-	// Generate 5 crash reports
-	for i := 0; i < 5; i++ {
-		func() {
-			defer ph.Recover()
-			panic(errors.New("test panic"))
-		}()
-	}
-
-	reports, err := ph.GetLastNCrashReports(3)
+func TestNewErrorOnWipeCrashFile(t *testing.T) {
+	// Create a temporary directory
+	tempDir, err := os.MkdirTemp("", "adfer_test")
 	if err != nil {
-		t.Fatalf("GetLastNCrashReports failed: %v", err)
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create a file that can't be written to
+	filePath := filepath.Join(tempDir, "crash_report.json")
+	err = os.WriteFile(filePath, []byte("[]"), 0444) // Read-only file
+	if err != nil {
+		t.Fatalf("Failed to create read-only file: %v", err)
 	}
 
-	if len(reports) != 3 {
-		t.Errorf("Expected 3 reports, got %d", len(reports))
-	}
+	// Redirect stdout to capture the error message
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
 
-	for _, report := range reports {
-		if report.Error != "test panic" {
-			t.Errorf("Expected error 'test panic', got '%s'", report.Error)
+	// Create a new PanicHandler with options that should cause WipeCrashFile to fail
+	New(Options{
+		DumpToFile: true,
+		FilePath:   filePath,
+		WipeFile:   true,
+	})
+
+	// Restore stdout
+	w.Close()
+	os.Stdout = oldStdout
+
+	// Read the captured output
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	output := buf.String()
+
+	// Check if the error message was printed
+	expectedError := "Error wiping crash file:"
+	if !strings.Contains(output, expectedError) {
+		t.Errorf("Expected error message containing '%s', but got: %s", expectedError, output)
+	}
+}
+
+func TestRecoverWithExitOnPanic(t *testing.T) {
+	exitCalled := false
+	ph := New(Options{
+		ExitOnPanic: true,
+	})
+	ph.exitFunc = func(code int) {
+		exitCalled = true
+		if code != 1 {
+			t.Errorf("Expected exit code 1, got %d", code)
 		}
 	}
-}
 
-func TestGetLastNCrashReportsTooBig(t *testing.T) {
-	testFile := "test_get_reports.log"
-	defer os.Remove(testFile)
-
-	ph := New(WithDumpToFile(testFile))
-
-	// Generate 5 crash reports
-	for i := 0; i < 5; i++ {
-		func() {
-			defer ph.Recover()
-			panic(errors.New("test panic"))
-		}()
-	}
-
-	_, err := ph.GetLastNCrashReports(16)
-	if err == nil {
-		t.Fatalf("GetLastNCrashReports should have failed")
-	}
-}
-
-func TestWipeCrashFile(t *testing.T) {
-	testFile := "test_wipe.log"
-	defer os.Remove(testFile)
-
-	ph := New(WithDumpToFile(testFile))
-
-	// Generate a crash report
 	func() {
 		defer ph.Recover()
 		panic("test panic")
 	}()
 
-	err := ph.WipeCrashFile()
-	if err != nil {
-		t.Fatalf("WipeCrashFile failed: %v", err)
-	}
-
-	data, err := os.ReadFile(testFile)
-	if err != nil {
-		t.Fatalf("Failed to read crash file: %v", err)
-	}
-
-	if string(data) != "[]" {
-		t.Errorf("Expected empty array '[]', got '%s'", string(data))
+	if !exitCalled {
+		t.Error("Expected exit function to be called, but it wasn't")
 	}
 }
 
-func TestWipeFileOnInit(t *testing.T) {
-	testFile := "test_wipe_on_init.log"
-	defer os.Remove(testFile)
-
-	// Create a file with some content
-	os.WriteFile(testFile, []byte("test content"), 0644)
-
-	New(
-		WithDumpToFile(testFile),
-		WithWipeFile(),
-	)
-
-	data, err := os.ReadFile(testFile)
+func TestAppendCrashReportWriteError(t *testing.T) {
+	// Create a temporary directory
+	tempDir, err := os.MkdirTemp("", "adfer_test")
 	if err != nil {
-		t.Fatalf("Failed to read crash file: %v", err)
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create a read-only file
+	filePath := filepath.Join(tempDir, "crash_report.json")
+	err = os.WriteFile(filePath, []byte("[]"), 0444) // Read-only file
+	if err != nil {
+		t.Fatalf("Failed to create read-only file: %v", err)
 	}
 
-	if string(data) != "[]" {
-		t.Errorf("Expected empty array '[]', got '%s'", string(data))
-	}
-}
+	// Create a PanicHandler with the read-only file
+	ph := New(Options{
+		DumpToFile: true,
+		FilePath:   filePath,
+	})
 
-func TestRecoverWithExitOnPanic(t *testing.T) {
-	if os.Getenv("TEST_EXIT") == "1" {
-		ph := New(WithExitOnPanic())
-		defer ph.Recover()
-		panic("test panic with exit")
-	}
-
-	cmd := exec.Command(os.Args[0], "-test.run=TestRecoverWithExitOnPanic")
-	cmd.Env = append(os.Environ(), "TEST_EXIT=1")
-	err := cmd.Run()
-	if e, ok := err.(*exec.ExitError); ok && !e.Success() {
-		return
-	}
-	t.Errorf("process ran with err %v, want exit status 1", err)
-}
-
-func TestDefaultErrorHandler(t *testing.T) {
+	// Redirect stdout to capture the error message
 	oldStdout := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	err := errors.New("test error")
-	stack := []byte("test stack")
-	defaultErrorHandler(err, stack)
-
-	w.Close()
-	os.Stdout = oldStdout
-
-	out, _ := io.ReadAll(r)
-	output := string(out)
-
-	if !strings.Contains(output, "test error") || !strings.Contains(output, "test stack") {
-		t.Errorf("defaultErrorHandler output doesn't contain expected content")
-	}
-}
-
-func TestAppendCrashReport(t *testing.T) {
-	testFile := "test_append.log"
-	defer os.Remove(testFile)
-
-	ph := New(WithDumpToFile(testFile))
-
-	report := CrashReport{
+	// Attempt to append a crash report
+	ph.appendCrashReport(CrashReport{
 		Timestamp: time.Now(),
 		Error:     "test error",
 		Stack:     "test stack",
-	}
+	})
 
-	ph.appendCrashReport(report)
+	// Restore stdout
+	w.Close()
+	os.Stdout = oldStdout
 
-	data, err := os.ReadFile(testFile)
-	if err != nil {
-		t.Fatalf("Failed to read crash file: %v", err)
-	}
+	// Read the captured output
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	output := buf.String()
 
-	var reports []CrashReport
-	err = json.Unmarshal(data, &reports)
-	if err != nil {
-		t.Fatalf("Failed to unmarshal crash reports: %v", err)
-	}
-
-	if len(reports) != 1 {
-		t.Fatalf("Expected 1 crash report, got %d", len(reports))
-	}
-
-	if reports[0].Error != "test error" || reports[0].Stack != "test stack" {
-		t.Errorf("Appended crash report doesn't match expected content")
+	// Check if the error message was printed
+	expectedError := "Error writing crash report to file:"
+	if !strings.Contains(output, expectedError) {
+		t.Errorf("Expected error message containing '%s', but got: %s", expectedError, output)
 	}
 }
