@@ -3,7 +3,7 @@
     <img src="logo.png" width="40%"/>
     <br/>
     <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-    <a href="https://codecov.io/gh/leaanthony/adfer"><img src="https://codecov.io/gh/leaanthony/adfer/branch/main/graph/badge.svg" alt="codecov"></a>
+    <a href="https://codecov.io/gh/leaanthony/adfer"><img src="https://codecov.io/gh/leaanthony/adfer/graph/badge.svg?token=XBDW78VUYA"/></a>
     <a href="https://goreportcard.com/report/github.com/leaanthony/adfer"><img src="https://goreportcard.com/badge/github.com/leaanthony/adfer" alt="Go Report Card"></a>
     <a href="https://godoc.org/github.com/leaanthony/adfer"><img src="https://godoc.org/github.com/leaanthony/adfer?status.svg" alt="GoDoc"></a>
     <a href="https://GitHub.com/leaanthony/adfer/releases/"><img src="https://img.shields.io/github/release/leaanthony/adfer.svg" alt="GitHub release"></a>
